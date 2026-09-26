@@ -1,0 +1,2 @@
+export const DEFAULT_TEMPERATURE = 1
+export const DEFAULT_MAX_TOKENS = 8192

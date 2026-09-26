@@ -1,0 +1,50 @@
+- id: logger
+  name: '@cordisjs/plugin-logger-console'
+- id: paths
+  name: ./dist/services/paths.js
+- id: sessions
+  name: ./dist/services/sessions.js
+- id: sandbox
+  name: ./dist/services/sandbox.js
+- id: tools
+  name: ./dist/services/tools.js
+- id: policy
+  name: ./dist/services/policy.js
+  config:
+    workMode: ro
+    approval: manual
+    network: false
+    workingDirectory: ""
+    commandTimeout: 30
+    planDirectory: .agent/plans
+    denyReadPaths:
+      - .env
+      - "**/.env"
+- id: llm
+  name: ./dist/services/llm.js
+  config:
+    model: deepseek-v4-pro
+    maxTokens: 8192
+    temperature: 1
+- id: graphs
+  name: ./dist/services/graphs.js
+  config:
+    maxSteps: 32
+- id: agent
+  name: ./dist/services/agent.js
+- id: fs
+  name: ./dist/plugins/fs.js
+- id: shell
+  name: ./dist/plugins/shell.js
+- id: plan
+  name: ./dist/plugins/plan.js
+- id: math
+  name: ./dist/plugins/math.js
+- id: settings
+  name: ./dist/services/settings.js
+- id: mcp
+  name: ./dist/plugins/mcp.js
+  config:
+    servers: []
+- id: cli
+  name: ./dist/plugins/cli.js

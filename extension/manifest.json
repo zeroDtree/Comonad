@@ -1,0 +1,9 @@
+{
+  "display_name": "Comonad",
+  "loading_order": 100,
+  "requires": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Comonad",
+  "version": "0.1.0"
+}
