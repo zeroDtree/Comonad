@@ -1,3 +1,5 @@
+import { stableEnd, wrapTex } from './live.js'
+
 const META = 'comonad'
 
 const MODES = [
@@ -1458,7 +1460,7 @@ if (tavernContext.eventSource && messageUpdated) tavernContext.eventSource.on(me
   mountTraceAt(index)
 })
 const streamingToken = tavernContext.event_types?.STREAM_TOKEN_RECEIVED
-if (tavernContext.eventSource && streamingToken) tavernContext.eventSource.on(streamingToken, () => mountLive())
+if (tavernContext.eventSource && streamingToken) tavernContext.eventSource.on(streamingToken, () => schedulePaint())
 if (tavernContext.eventSource && rendered) tavernContext.eventSource.on(rendered, mountRevert)
 mountRevert()
 mountTraces()
@@ -1858,22 +1860,22 @@ function noteEvent(parsed) {
   if (!liveTrace) return ''
   if (parsed.event === 'token' && parsed.data?.text) {
     addToken(liveTrace, parsed.data.text)
-    mountLive()
+    schedulePaint()
     return parsed.data.text
   }
   if (parsed.event === 'reasoning' && parsed.data?.text) {
     addThought(liveTrace, parsed.data.text)
-    mountLive()
+    schedulePaint()
     return ''
   }
   if (parsed.event === 'tool-delta') {
     addToolDelta(liveTrace, parsed.data)
-    mountLive()
+    schedulePaint()
     return ''
   }
   if (parsed.event === 'tool-result') {
     addToolResult(liveTrace, parsed.data)
-    mountLive()
+    schedulePaint()
     return ''
   }
   return ''
@@ -2144,12 +2146,32 @@ function mountTraces() {
   }
 }
 
+let paintQueued = false
+let paintMisses = 0
+
+function schedulePaint() {
+  if (paintQueued) return
+  paintQueued = true
+  requestAnimationFrame(() => {
+    paintQueued = false
+    mountLive()
+  })
+}
+
 function mountLive() {
   if (!liveTrace) return
   const target = streamingMessage()
   if (!target) return
+  if (!document.querySelector(`.mes[mesid="${target.index}"]`)) {
+    if (paintMisses < 120) {
+      paintMisses += 1
+      schedulePaint()
+    }
+    return
+  }
+  paintMisses = 0
   const texts = traceTexts(liveTrace.parts)
-  paintTrace(target.index, { parts: liveTrace.parts, ...texts })
+  paintTrace(target.index, { parts: liveTrace.parts, ...texts }, true)
 }
 
 function mountTraceAt(index) {
@@ -2169,18 +2191,33 @@ function syncTraceEditing(mes) {
   mes.classList.toggle('is-editing', editing)
 }
 
-function paintTrace(index, trace) {
+function paintTrace(index, trace, live = false) {
   const mes = document.querySelector(`.mes[mesid="${index}"]`)
   const block = mes?.querySelector('.mes_block') ?? mes
   if (!block) return
   const message = tavern().chat?.[index]
-  block.querySelector('.comonad-trace')?.remove()
   if (traceSuppressed(message)) {
+    block.querySelector('.comonad-trace')?.remove()
     mes.classList.remove('comonad-traced', 'is-editing')
     return
   }
   mes.classList.add('comonad-traced')
   const view = viewOf(message)
+  let panel = block.querySelector('.comonad-trace')
+  if (!panel) {
+    panel = buildPanel()
+    const text = [...block.children].find((node) => node.classList.contains('mes_text'))
+    if (text) text.before(panel)
+    else block.prepend(panel)
+  }
+  for (const button of panel.querySelectorAll('.comonad-trace-tabs button')) {
+    button.classList.toggle('is-selected', button.dataset.view === view)
+  }
+  syncBody(panel.querySelector('.comonad-trace-body'), view, trace, index, live, message)
+  syncTraceEditing(mes)
+}
+
+function buildPanel() {
   const panel = document.createElement('div')
   panel.className = 'comonad-trace'
   const tabs = document.createElement('div')
@@ -2190,55 +2227,554 @@ function paintTrace(index, trace) {
     button.type = 'button'
     button.dataset.view = value
     button.textContent = label
-    button.classList.toggle('is-selected', value === view)
     tabs.append(button)
   }
   const body = document.createElement('div')
   body.className = 'comonad-trace-body'
-  body.replaceChildren(view === 'rendered' ? renderedNodes(trace.parts, index) : tracePre(view === 'token' ? trace.token : (trace.raw ?? trace.full)))
   panel.append(tabs, body)
-  const text = [...block.children].find((node) => node.classList.contains('mes_text'))
-  if (text) text.before(panel)
-  else block.prepend(panel)
-  syncTraceEditing(mes)
+  return panel
 }
 
-function renderedNodes(parts, index) {
-  const host = document.createElement('div')
-  host.className = 'comonad-rendered'
-  for (const part of parts ?? []) {
-    if (part.type === 'thought') host.append(fold('Thought', part.text))
-    else if (part.type === 'tool') host.append(fold(`> ${part.name || 'tool'}`, `${part.arguments || ''}\n\n${part.result || ''}`))
-    else host.append(traceMarkdown(part.text, index))
+function syncBody(body, view, trace, index, live, message) {
+  if (view !== 'rendered') {
+    const text = view === 'token' ? (trace.token || '') : (trace.raw ?? trace.full ?? '')
+    let pre = body.querySelector(':scope > .comonad-trace-pre')
+    if (!pre || body.children.length !== 1) {
+      body.replaceChildren(tracePre(text))
+      return
+    }
+    writePre(pre, text)
+    return
   }
-  return host
+  let host = body.querySelector(':scope > .comonad-rendered')
+  if (!host || body.children.length !== 1) {
+    host = document.createElement('div')
+    host.className = 'comonad-rendered'
+    body.replaceChildren(host)
+  }
+  syncRendered(host, trace.parts, index, live, message)
 }
 
-function traceMarkdown(text, index) {
-  const ctx = tavern()
-  const message = ctx.chat?.[index]
+function syncRendered(host, parts, index, live, message) {
+  const list = parts ?? []
+  while (host.children.length > list.length) host.lastElementChild.remove()
+  const last = list.length - 1
+  for (let i = 0; i < list.length; i += 1) {
+    const part = list[i]
+    const kind = part.type === 'tool' || part.type === 'thought' ? part.type : 'text'
+    const active = Boolean(live && i === last)
+    let node = host.children[i]
+    if (!node || node.dataset.kind !== kind) {
+      node = kind === 'text' ? createTextHost() : renderFold(message, i)
+      node.dataset.kind = kind
+      if (host.children[i]) host.children[i].replaceWith(node)
+      else host.append(node)
+    }
+    if (kind === 'text') updateText(node, part.text || '', index, { active, live })
+    else updateFold(node, message, i, part, active)
+  }
+}
+
+function createTextHost() {
   const node = document.createElement('div')
   node.className = 'comonad-md'
-  const format = ctx.messageFormatting
-  node.innerHTML = typeof format === 'function'
-    ? format(text || '', message?.name ?? '', Boolean(message?.is_system), false, index, {}, false)
-    : ''
-  if (typeof format !== 'function') node.textContent = text || ''
   return node
 }
 
-function fold(title, text) {
+function updateText(node, text, index, { active, live }) {
+  if (!(live && active)) {
+    if (node._mode === 'done' && node._raw === text) return
+    if (node._mode === 'live') finishLive(node, text, index)
+    else fillWhole(node, text, index)
+    node._mode = 'done'
+    node._raw = text
+    return
+  }
+  if (node._mode !== 'live') {
+    const stable = document.createElement('div')
+    stable.className = 'comonad-stable'
+    stable._cut = 0
+    const tail = document.createElement('div')
+    tail.className = 'comonad-tail'
+    node.replaceChildren(stable, tail)
+    node._mode = 'live'
+  }
+  growLive(node, text, index)
+}
+
+function finishLive(node, text, index) {
+  const stable = node.querySelector('.comonad-stable')
+  const tail = node.querySelector('.comonad-tail')
+  const cut = stable?._cut ?? 0
+  if (!stable || cut > text.length) {
+    fillWhole(node, text, index)
+    return
+  }
+  if (cut < text.length) appendSlice(stable, text.slice(cut), index)
+  stable._cut = text.length
+  tail?.remove()
+}
+
+function fillWhole(node, text, index) {
+  node.replaceChildren()
+  if (text) appendSlice(node, text, index)
+}
+
+function growLive(node, text, index) {
+  const stable = node.querySelector('.comonad-stable')
+  const tail = node.querySelector('.comonad-tail')
+  if (!stable || !tail) return
+  let cut = stable._cut ?? 0
+  const end = stableEnd(text)
+  if (cut > text.length || end < cut) {
+    stable.replaceChildren()
+    cut = 0
+  }
+  if (end > cut) {
+    appendSlice(stable, text.slice(cut, end), index)
+    cut = end
+  }
+  stable._cut = cut
+  paintTail(tail, text.slice(cut), index)
+}
+
+function appendSlice(parent, text, index) {
+  if (!text) return
+  const html = formatMarkdown(text, index)
+  const chunk = document.createElement('div')
+  chunk.className = 'comonad-chunk'
+  if (!html) {
+    chunk.textContent = text
+    parent.append(chunk)
+    return
+  }
+  chunk.innerHTML = html
+  highlightCode(chunk)
+  parent.append(chunk)
+  renderKatex(claimMath(chunk))
+}
+
+function paintTail(tail, text, index) {
+  if (tail._raw === text) return
+  tail._raw = text
+  if (!text) {
+    tail.replaceChildren()
+    return
+  }
+  const html = formatMarkdown(text, index)
+  if (html == null) {
+    tail.textContent = text
+    return
+  }
+  tail.innerHTML = html
+}
+
+function formatMarkdown(text, index) {
+  if (!text) return ''
+  try {
+    const ctx = tavern()
+    const message = ctx.chat?.[index]
+    const format = ctx.messageFormatting
+    if (typeof format !== 'function') return null
+    return format(text, message?.name ?? '', Boolean(message?.is_system), false, index, {}, false)
+  } catch {
+    return null
+  }
+}
+
+function highlightCode(root) {
+  const hljs = globalThis.hljs
+  if (!hljs || typeof hljs.highlightElement !== 'function') return
+  for (const code of root.querySelectorAll('pre code')) {
+    if (code.dataset.highlighted) continue
+    if (code.classList.contains('custom-language-latex') || code.classList.contains('custom-language-asciimath')) continue
+    try {
+      hljs.highlightElement(code)
+    } catch {
+      // Leave the source text in place.
+    }
+  }
+}
+
+const foldPins = new WeakMap()
+
+function setPin(message, partIndex, pin) {
+  if (!message) return
+  let pins = foldPins.get(message)
+  if (!pins) foldPins.set(message, pins = new Map())
+  pins.set(partIndex, pin)
+}
+
+function pinOf(message, partIndex) {
+  return foldPins.get(message)?.get(partIndex) ?? ''
+}
+
+function renderFold(message, partIndex) {
   const details = document.createElement('details')
   details.className = 'comonad-fold'
   const summary = document.createElement('summary')
-  summary.textContent = title
-  details.append(summary, tracePre(text))
+  details.append(summary, tracePre(''))
+  details.addEventListener('toggle', () => {
+    if (details._adjusting) return
+    details.dataset.user = '1'
+    setPin(message, partIndex, details.open ? 'open' : 'closed')
+  })
   return details
+}
+
+function updateFold(details, message, partIndex, part, active) {
+  const summary = details.querySelector('summary')
+  const title = part.type === 'thought' ? 'Thought' : `> ${part.name || 'tool'}`
+  if (summary.textContent !== title) summary.textContent = title
+  const text = part.type === 'thought'
+    ? (part.text || '')
+    : `${part.arguments || ''}\n\n${part.result || ''}`
+  writePre(details.querySelector('pre'), text)
+  const pin = pinOf(message, partIndex)
+  if (pin === 'open' || pin === 'closed') {
+    if (details.dataset.user !== '1') {
+      details.dataset.user = '1'
+      applyFold(details, pin === 'open')
+    }
+    return
+  }
+  if (details.dataset.user === '1') return
+  const want = Boolean(active && part.type === 'thought')
+  const mark = want ? '1' : '0'
+  if (details.dataset.deflt !== mark) {
+    details.dataset.deflt = mark
+    applyFold(details, want)
+  }
+}
+
+function applyFold(details, open) {
+  if (details.open === open) return
+  details._adjusting = true
+  details.open = open
+  queueMicrotask(() => {
+    requestAnimationFrame(() => {
+      details._adjusting = false
+    })
+  })
+}
+
+function writePre(pre, text) {
+  if (!pre || pre._text === text) return
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 4
+  pre._text = text
+  pre.textContent = text
+  if (atBottom) pre.scrollTop = pre.scrollHeight
 }
 
 function tracePre(text) {
   const pre = document.createElement('pre')
   pre.className = 'comonad-trace-pre'
+  pre._text = text || ''
   pre.textContent = text || ''
   return pre
 }
+
+function claimMath(root) {
+  const hosts = []
+  const codes = [...root.querySelectorAll('code.custom-language-latex, code.custom-language-asciimath')]
+  for (const block of codes) {
+    if (!root.contains(block) || block.closest('.comonad-tex')) continue
+    const display = block.parentElement?.localName === 'pre'
+    const host = document.createElement(display ? 'section' : 'span')
+    host.className = 'comonad-tex'
+    host.dataset.kind = block.classList.contains('custom-language-asciimath') ? 'ascii' : 'latex'
+    host.dataset.tex = block.textContent ?? ''
+    host.textContent = host.dataset.tex
+    const target = display ? block.parentElement : block
+    target.replaceWith(host)
+    hosts.push(host)
+  }
+  return hosts
+}
+
+let mathReady = null
+
+function ensureMath() {
+  if (!mathReady) {
+    mathReady = Promise.all([
+      import('./vendor/katex.js'),
+      import('./vendor/asciimath.js'),
+    ]).then(([katexMod, asciiMod]) => ({
+      render: katexMod.render,
+      ascii: asciiMod.default,
+    })).catch((error) => {
+      mathReady = null
+      throw error
+    })
+  }
+  return mathReady
+}
+
+function renderKatex(hosts) {
+  if (!hosts.length) return
+  ensureMath().then(({ render, ascii }) => {
+    for (const host of hosts) {
+      if (!host.isConnected || host.dataset.typeset === '1') continue
+      let tex = host.dataset.tex ?? ''
+      if (host.dataset.kind === 'ascii' && typeof ascii === 'function') {
+        try {
+          tex = ascii(tex)
+        } catch {
+          // Keep the AsciiMath source visible.
+        }
+      }
+      try {
+        render(tex, host, { throwOnError: false, displayMode: host.tagName === 'SECTION' })
+        host.dataset.typeset = '1'
+      } catch {
+        // The TeX source is already the text of the host.
+      }
+    }
+  }).catch(() => {})
+}
+
+document.addEventListener('copy', (event) => {
+  try {
+    const text = copiedTrace()
+    if (text == null || !event.clipboardData) return
+    event.preventDefault()
+    event.clipboardData.setData('text/plain', text)
+  } catch {
+    // Leave the browser's copy alone.
+  }
+})
+
+function copiedTrace() {
+  const selection = document.getSelection()
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
+  const range = selection.getRangeAt(0)
+  if (inField(range.startContainer) || inField(range.endContainer)) return null
+  const rendered = renderedOf(range.startContainer)
+  if (!rendered || renderedOf(range.endContainer) !== rendered) return null
+  const start = mathHostOf(range.startContainer)
+  const end = mathHostOf(range.endContainer)
+  if (start && start === end) {
+    const wrapped = wrapTex(texOf(start), displayMath(start))
+    if (wrapped) return wrapped
+  }
+  const block = codeBlockOf(range.startContainer)
+  if (block && block === codeBlockOf(range.endContainer)) return serializePre(block, range).replace(/\n+$/, '') || null
+  const root = range.commonAncestorContainer
+  const el = root.nodeType === 1 ? root : root.parentElement
+  if (!el || (el !== rendered && !rendered.contains(el))) return null
+  const text = liftMarkdown(el, rendered, serialize(el, range)).replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '')
+  return text || null
+}
+
+function renderedOf(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement
+  return el?.closest?.('.comonad-rendered, .mes_text') ?? null
+}
+
+function inField(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement
+  return Boolean(el?.closest?.('textarea, input'))
+}
+
+function codeBlockOf(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement
+  const pre = el?.closest?.('pre')
+  const code = pre?.querySelector(':scope > code')
+  if (!code) return null
+  if (code.classList.contains('custom-language-latex') || code.classList.contains('custom-language-asciimath')) return null
+  return pre
+}
+
+function mathHostOf(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement
+  if (!el) return null
+  const marked = el.closest('.comonad-tex')
+  if (marked) return marked
+  const code = el.closest('code.custom-language-latex, code.custom-language-asciimath')
+  if (code) return code.parentElement?.tagName === 'PRE' ? code.parentElement : code
+  let current = el
+  while (current && !current.classList?.contains('comonad-rendered') && !current.classList?.contains('mes_text')) {
+    if (directlyWrapsKatex(current)) return current
+    current = current.parentElement
+  }
+  return null
+}
+
+function directlyWrapsKatex(node) {
+  return [...node.children].some((child) => child.classList?.contains('katex') || child.classList?.contains('katex-display'))
+}
+
+function displayMath(node) {
+  if (node.tagName === 'SECTION' || node.tagName === 'PRE') return true
+  if (node.classList.contains('katex-display')) return true
+  return [...node.children].some((child) => child.classList?.contains('katex-display'))
+}
+
+function texOf(node) {
+  if (node.dataset?.tex) return node.dataset.tex
+  const code = node.tagName === 'CODE' ? node : node.querySelector?.(':scope > code.custom-language-latex, :scope > code.custom-language-asciimath')
+  if (code) return code.textContent ?? ''
+  return node.querySelector?.('annotation[encoding="application/x-tex"]')?.textContent ?? ''
+}
+
+function intersects(node, range) {
+  if (node === range.commonAncestorContainer) return true
+  try {
+    return range.intersectsNode(node)
+  } catch {
+    return false
+  }
+}
+
+function serialize(node, range) {
+  if (!node) return ''
+  if (node.nodeType === 1 && (node.classList.contains('comonad-tex') || node.classList.contains('katex') || node.classList.contains('katex-display') || directlyWrapsKatex(node))) {
+    if (!intersects(node, range)) return ''
+    const tex = wrapTex(texOf(node), displayMath(node))
+    if (!tex) return ''
+    return displayMath(node) ? `${tex}\n\n` : tex
+  }
+  if (node.nodeType === 3) return sliceText(node, range)
+  if (node.nodeType !== 1) return ''
+  if (node !== range.commonAncestorContainer && !intersects(node, range)) return ''
+  const tag = node.tagName
+  if (tag === 'BR') return '\n'
+  if (tag === 'HR') return '---\n\n'
+  if (tag === 'PRE') return serializePre(node, range)
+  if (tag === 'LI') return serializeItem(node, range)
+  let inner = ''
+  for (const child of node.childNodes) inner += serialize(child, range)
+  if (tag === 'STRONG' || tag === 'B') return inner ? `**${inner}**` : ''
+  if (tag === 'EM' || tag === 'I') return inner ? `*${inner}*` : ''
+  if (tag === 'CODE') return serializeCode(node, inner)
+  if (/^H[1-6]$/.test(tag)) {
+    if (!inner.trim()) return ''
+    return `${'#'.repeat(Number(tag[1]))} ${inner.replace(/\n+/g, ' ').trim()}\n\n`
+  }
+  if (tag === 'P') return inner.trim() ? `${inner.replace(/\n+$/, '')}\n\n` : ''
+  if (tag === 'BLOCKQUOTE') {
+    if (!inner.trim()) return ''
+    return `> ${inner.replace(/\n+$/, '').replace(/\n/g, '\n> ')}\n\n`
+  }
+  if (tag === 'UL' || tag === 'OL') {
+    if (!inner.trim()) return ''
+    return inner.replace(/\n*$/, '\n\n')
+  }
+  return inner
+}
+
+function liftMarkdown(el, rendered, text) {
+  if (!text || el === rendered) return text
+  let current = el.parentElement
+  while (current && current !== rendered) {
+    text = decorate(current, text)
+    current = current.parentElement
+  }
+  return text
+}
+
+function decorate(node, text) {
+  if (!text) return ''
+  const tag = node.tagName
+  if (tag === 'STRONG' || tag === 'B') return `**${text}**`
+  if (tag === 'EM' || tag === 'I') return `*${text}*`
+  if (tag === 'CODE') return serializeCode(node, text)
+  if (/^H[1-6]$/.test(tag)) return `${'#'.repeat(Number(tag[1]))} ${text.replace(/\n+/g, ' ').trim()}\n\n`
+  if (tag === 'LI') {
+    if (/^\s*- /.test(text)) return text.endsWith('\n') ? text : `${text}\n`
+    let depth = 0
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === 'LI') depth += 1
+    }
+    const indent = '  '.repeat(depth)
+    const body = text.replace(/\s+$/, '').replace(/\n+/g, `\n${indent}  `)
+    return `${indent}- ${body}\n`
+  }
+  if (tag === 'BLOCKQUOTE') return `> ${text.replace(/\n+$/, '').replace(/\n/g, '\n> ')}\n\n`
+  if (tag === 'P') return `${text.replace(/\n+$/, '')}\n\n`
+  if (tag === 'UL' || tag === 'OL') return text.replace(/\n*$/, '\n\n')
+  if (tag === 'PRE') return text.endsWith('\n') ? text : `${text}\n`
+  return text
+}
+
+function serializeItem(node, range) {
+  let text = ''
+  let nested = ''
+  for (const child of node.childNodes) {
+    if (child.nodeType === 1 && (child.tagName === 'UL' || child.tagName === 'OL')) nested += serialize(child, range)
+    else text += serialize(child, range)
+  }
+  if (!text.trim() && !nested.trim()) return ''
+  if (!text.trim()) return nested
+  let depth = 0
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName === 'LI') depth += 1
+  }
+  const indent = '  '.repeat(depth)
+  const body = text.replace(/\s+$/, '').replace(/\n+/g, `\n${indent}  `)
+  return `${indent}- ${body}\n${nested}`
+}
+
+function serializePre(node, range) {
+  const code = node.querySelector(':scope > code')
+  if (code?.classList.contains('custom-language-latex') || code?.classList.contains('custom-language-asciimath')) {
+    const tex = wrapTex(code.textContent ?? '', true)
+    return tex ? `${tex}\n\n` : ''
+  }
+  if (code) {
+    const body = rawSlice(code, range).replace(/\n$/, '')
+    if (!body) return ''
+    return `\`\`\`${codeLang(code)}\n${body}\n\`\`\`\n\n`
+  }
+  const text = rawSlice(node, range)
+  if (!text) return ''
+  return text.endsWith('\n') ? text : `${text}\n`
+}
+
+function serializeCode(node, inner) {
+  if (node.classList.contains('custom-language-latex') || node.classList.contains('custom-language-asciimath')) {
+    return wrapTex(node.textContent ?? '', false)
+  }
+  return inner ? `\`${inner}\`` : ''
+}
+
+function codeLang(code) {
+  for (const name of code.classList) {
+    if (name === 'custom-language-latex' || name === 'custom-language-asciimath') continue
+    if (name.startsWith('custom-language-')) return name.slice('custom-language-'.length)
+    if (name.startsWith('language-')) return name.slice('language-'.length)
+  }
+  return ''
+}
+
+function sliceText(node, range) {
+  if (!node.data.trim()) {
+    const parent = node.parentElement
+    const structural = !parent || /^(DIV|UL|OL|SECTION|BLOCKQUOTE|DETAILS|BODY|TABLE|THEAD|TBODY|TR)$/.test(parent.tagName)
+    if (structural || /[\n\r]/.test(node.data)) return ''
+    if (!intersects(node, range)) return ''
+    return ' '
+  }
+  return rawSlice(node, range)
+}
+
+function rawSlice(node, range) {
+  if (!node) return ''
+  if (node.nodeType === 3) {
+    if (node !== range.commonAncestorContainer && !intersects(node, range)) return ''
+    let start = 0
+    let end = node.data.length
+    if (node === range.startContainer) start = range.startOffset
+    if (node === range.endContainer) end = range.endOffset
+    if (end < start) return ''
+    return node.data.slice(start, end)
+  }
+  if (node.nodeType !== 1) return ''
+  if (node !== range.commonAncestorContainer && !intersects(node, range)) return ''
+  if (node.tagName === 'BR') return '\n'
+  let out = ''
+  for (const child of node.childNodes) out += rawSlice(child, range)
+  return out
+}
+
+void ensureMath().catch(() => {})

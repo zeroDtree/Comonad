@@ -34,7 +34,7 @@ cliPlugin.inject = ['agent', 'graphs', 'sessions', 'policy', 'llm']
 export function cliSessionId(now = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, '0')
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}@${pad(now.getHours())}h${pad(now.getMinutes())}m${pad(now.getSeconds())}s${String(now.getMilliseconds()).padStart(3, '0')}ms`
-  return `cli-${stamp}`
+  return `cli - ${stamp}`
 }
 
 async function repl(ctx: Context) {

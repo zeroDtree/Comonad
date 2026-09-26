@@ -96,7 +96,7 @@ flowchart LR
 
 ## CLI
 
-When stdin is a TTY, `npm start` builds and opens a read-eval-print loop. `npm start -- --cli` forces it. Each start writes a new session file under `data/sessions`, named `cli-<timestamp>`. Modes and approval match a chat. Credentials come from `data/settings.json` when set, otherwise `LLM_API_BASE` and `LLM_API_KEY`.
+When stdin is a TTY, `npm start` builds and opens a read-eval-print loop. `npm start -- --cli` forces it. Each start writes a new session file under `data/sessions`, named `cli - <timestamp>`. Modes and approval match a chat. Credentials come from `data/settings.json` when set, otherwise `LLM_API_BASE` and `LLM_API_KEY`.
 
 With no value, `!mode`, `!network`, and `!approval` show the current setting and the choices.
 
@@ -114,7 +114,7 @@ With no value, `!mode`, `!network`, and `!approval` show the current setting and
 npm start
 
 comonad  model=deepseek-v4-pro  mode=ro  network=off  approval=manual
-session  cli-2026-09-26@11h46m52s982ms
+session  cli - 2026-09-26@11h46m52s982ms
 Commands: !help !mode !network !approval !save !load !exit
 > hello
 

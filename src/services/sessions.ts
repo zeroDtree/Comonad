@@ -23,10 +23,6 @@ export function safeSessionId(id: string): boolean {
   return !id.includes('/') && !id.includes('\\') && !id.includes('\0') && !id.includes('..')
 }
 
-export function sessionFileId(id: string): string {
-  return id.replace(/\s+/g, '')
-}
-
 function normalizePolicy(policy: SessionPolicy): SessionPolicy {
   const raw = policy as Partial<SessionPolicy>
   return {
@@ -104,9 +100,9 @@ export class Sessions extends Service {
   }
 
   create(policy: SessionPolicy, id: string = randomUUID()): Session {
-    const idOnDisk = sessionFileId(id)
+    if (!safeSessionId(id)) throw new Error(`invalid session id ${id}`)
     const session: Session = {
-      id: idOnDisk,
+      id,
       title: 'New thread',
       updatedAt: Date.now(),
       policy: structuredClone(policy),
@@ -114,19 +110,18 @@ export class Sessions extends Service {
       turnIndex: 0,
       cursor: null,
     }
-    this.sessions.set(idOnDisk, session)
+    this.sessions.set(id, session)
     this.persist(session)
     return session
   }
 
   get(id: string): Session | undefined {
-    return this.sessions.get(sessionFileId(id))
+    return this.sessions.get(id)
   }
 
   require(id: string): Session {
-    const idOnDisk = sessionFileId(id)
-    const session = this.sessions.get(idOnDisk)
-    if (!session) throw new Error(`unknown session ${idOnDisk}`)
+    const session = this.sessions.get(id)
+    if (!session) throw new Error(`unknown session ${id}`)
     return session
   }
 
@@ -173,22 +168,20 @@ export class Sessions extends Service {
   }
 
   copy(source: Session, id: string): Session {
-    const idOnDisk = sessionFileId(id)
-    if (!safeSessionId(idOnDisk)) throw new Error(`invalid session id ${idOnDisk}`)
-    if (this.sessions.has(idOnDisk)) throw new Error(`session ${idOnDisk} already exists`)
+    if (!safeSessionId(id)) throw new Error(`invalid session id ${id}`)
+    if (this.sessions.has(id)) throw new Error(`session ${id} already exists`)
     const session = structuredClone(source)
-    session.id = idOnDisk
+    session.id = id
     session.cursor = null
-    this.sessions.set(idOnDisk, session)
+    this.sessions.set(id, session)
     this.persist(session)
     return session
   }
 
   remove(id: string) {
-    const idOnDisk = sessionFileId(id)
-    if (!this.sessions.delete(idOnDisk)) return
+    if (!this.sessions.delete(id)) return
     try {
-      unlinkSync(join(this.dir, `${idOnDisk}.json`))
+      unlinkSync(join(this.dir, `${id}.json`))
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }

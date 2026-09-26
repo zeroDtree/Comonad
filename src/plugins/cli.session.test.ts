@@ -23,19 +23,18 @@ const policy: SessionPolicy = {
 describe('cliSessionId', () => {
   it('names a session with the start time', () => {
     const id = cliSessionId(new Date(2026, 8, 26, 11, 2, 8, 829))
-    expect(id).toBe('cli-2026-09-26@11h02m08s829ms')
+    expect(id).toBe('cli - 2026-09-26@11h02m08s829ms')
   })
 })
 
 describe('session file ids', () => {
-  it('stores a SillyTavern chat id without spaces', async () => {
+  it('stores a SillyTavern chat id unchanged', async () => {
     const { root, ctx, dir } = await openSessions()
     const chatId = 'Assistant - 2026-09-26@11h21m37s831ms'
     const created = ctx.sessions.create(policy, chatId)
-    expect(created.id).toBe('Assistant-2026-09-26@11h21m37s831ms')
-    expect(ctx.sessions.get(chatId)?.id).toBe(created.id)
-    expect(existsSync(join(dir, `${created.id}.json`))).toBe(true)
-    expect(existsSync(join(dir, `${chatId}.json`))).toBe(false)
+    expect(created.id).toBe(chatId)
+    expect(ctx.sessions.get(chatId)?.id).toBe(chatId)
+    expect(existsSync(join(dir, `${chatId}.json`))).toBe(true)
     rmSync(root, { recursive: true, force: true })
   })
 })

@@ -990,3 +990,13 @@
   max-height: 240px;
   overflow: auto;
 }
+
+.comonad-stable,
+.comonad-tail,
+.comonad-chunk {
+  display: contents;
+}
+
+.comonad-tex {
+  user-select: text;
+}
