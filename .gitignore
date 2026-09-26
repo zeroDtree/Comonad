@@ -1,0 +1,27 @@
+# dependencies and build
+node_modules/
+dist/
+*.tsbuildinfo
+*.tgz
+
+# test
+coverage/
+.vite/
+
+# runtime
+/.cordis/
+/data/
+/.agent/
+/pkgs/
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# local
+*.log
+.DS_Store
+.idea/
+*.swp
+*~
